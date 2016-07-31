@@ -24,5 +24,56 @@ func (mr *Master) schedule(phase jobPhase) {
 	//
 	// TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
 	//
+	tasks := make(chan int)
+	for t := 0; t < ntasks; t++ {
+		go func(t int) {
+			tasks <- t
+		}(t)
+	}
+
+	// To signal to the for loop to break when all tasks are completed
+	quit := make(chan bool)
+	task := make(chan int, 1)
+	tasksCompleted := 0
+	go func() {
+		for {
+			select {
+			case <-task:
+				tasksCompleted++
+				if tasksCompleted == ntasks {
+					quit <- true
+				}
+			default:
+			}
+		}
+	}()
+
+Loop:
+	for {
+		select {
+		case <-quit:
+			break Loop
+		case t := <-tasks:
+			go func(t int) {
+				w := <-mr.registerChannel
+				arg := new(DoTaskArgs)
+				arg.JobName = mr.jobName
+				arg.Phase = phase
+				arg.TaskNumber = t
+				arg.File = mr.files[t]
+				arg.NumOtherPhase = nios
+
+				ok := call(w, "Worker.DoTask", arg, new(struct{}))
+				if !ok {
+					// If the task didn't complete successfully, we put it back to the tasks channel so that it can be taken up by another worker.
+					tasks <- t
+				} else {
+					// If we complete a task successfully we send over a signal to the other goroutine which mantains a count of the tasks completed.
+					task <- t
+				}
+				mr.registerChannel <- w
+			}(t)
+		}
+	}
 	fmt.Printf("Schedule: %v phase done\n", phase)
 }
